@@ -1,6 +1,6 @@
 #!/usr/bin/python
 #Inspired by Cristi Zot's Udemy course, "Python for Penetration Testers"
-#Recon information based on information derived from ipinfo.io
+#Recon GeoIP information derived from ipinfo.io
 
 import sys
 import requests
