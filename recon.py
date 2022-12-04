@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/bin/python3
 #Inspired by Cristi Zot's Udemy course, "Python for Penetration Testers"
 #Recon GeoIP information derived from ipinfo.io
 
