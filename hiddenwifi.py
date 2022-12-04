@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/bin/python3
 #Inspired by Cristi Zot's Udemy course, "Python for Penetration Testers"
 #Find hidden WiFi SSID networks.  This has not been tested because my Mac and Alfa card aren't playing nice.
 
