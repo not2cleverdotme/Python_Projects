@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/bin/python
 #Inspired by Cristi Zot's Udemy course, "Python for Penetration Testers"
 #MAC address spoofer.  The MAC address will revert to original after reboot.
 #It may take two inital tries due to the interface going down/up
