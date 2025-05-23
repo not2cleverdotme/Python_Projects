@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  security-tools:
+    build: .
+    container_name: security-tools
+    network_mode: host  # Required for network tools
+    privileged: true    # Required for system-level operations
+    volumes:
+      - .:/app         # Mount current directory
+      - /var/run/docker.sock:/var/run/docker.sock  # For Docker API access
+    environment:
+      - PYTHONUNBUFFERED=1  # Ensure Python output is not buffered
+    cap_add:
+      - NET_ADMIN    # Required for network interface manipulation
+      - NET_RAW      # Required for raw socket access
+    devices:
+      - /dev/net/tun:/dev/net/tun  # For VPN/tunneling capabilities
+    restart: unless-stopped 

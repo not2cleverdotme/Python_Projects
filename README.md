@@ -129,7 +129,7 @@ requests>=2.26.0
 
 ### Quick Start
 ```bash
-git clone https://github.com/yourusername/security-tools-suite.git
+git clone https://github.com/not2cleverdotme/Python_Projects.git
 cd security-tools-suite
 pip install -r requirements.txt
 chmod +x security_tools_menu.py  # Linux/macOS only
@@ -145,9 +145,28 @@ pip install -r requirements.txt
 
 ### Docker Installation
 ```bash
+# Build and run using docker-compose (recommended)
+docker-compose up --build
+
+# Or build and run using Docker directly
 docker build -t security-tools .
-docker run -it --net=host --privileged security-tools
+docker run -it --rm \
+    --net=host \
+    --privileged \
+    -v "$(pwd)":/app \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    --cap-add=NET_ADMIN \
+    --cap-add=NET_RAW \
+    --device /dev/net/tun:/dev/net/tun \
+    security-tools
 ```
+
+#### Docker Notes
+- The container requires privileged access for network operations
+- Host network mode is used for direct network interface access
+- Volume mounts allow accessing local files
+- NET_ADMIN and NET_RAW capabilities are needed for network tools
+- Some tools may have limited functionality in containerized environment
 
 ## 🚀 Usage
 
@@ -309,7 +328,7 @@ sudo python3 security_tools_menu.py --debug
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit pull requests, report bugs, and suggest features.
+Contributions are welcome! Please feel free to submit pull requests, and suggest features.
 
 1. Fork the repository
 2. Create your feature branch
@@ -333,7 +352,7 @@ The authors and contributors are not responsible for any misuse or damage caused
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
-Created and maintained with ❤️ by [Your Name]
+Created and maintained with ❤️ by not2cleverdotme
 
-Last Updated: [Current Date]
+Last Updated: 2025-23-05
 Version: 1.1.0 
