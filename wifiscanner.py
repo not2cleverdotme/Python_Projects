@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Enhanced Hidden WiFi Scanner
-Detects hidden wireless networks by monitoring probe requests/responses
-and association requests.
+WiFi Network Scanner
+Detects and analyzes all available wireless networks in range.
 """
 
 import argparse
@@ -11,14 +10,14 @@ import os
 import signal
 import sys
 import time
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, List
 from datetime import datetime
 import json
 import platform
 import subprocess
 from scapy.all import (
-    Dot11, Dot11ProbeReq, Dot11ProbeResp, Dot11AssoReq,
-    Dot11Beacon, RadioTap, sniff
+    Dot11, Dot11Beacon, Dot11ProbeResp, Dot11Elt, RadioTap,
+    sniff, conf
 )
 
 class InterfaceHandler:
@@ -62,14 +61,12 @@ class InterfaceHandler:
         try:
             # Check if iw is available
             if self._run_command("which iw")[0] == 0:
-                # Modern Linux with iw
                 commands = [
                     f"sudo ip link set {interface} down",
                     f"sudo iw {interface} set monitor none",
                     f"sudo ip link set {interface} up"
                 ]
             else:
-                # Fallback to iwconfig
                 commands = [
                     f"sudo ifconfig {interface} down",
                     f"sudo iwconfig {interface} mode monitor",
@@ -82,7 +79,6 @@ class InterfaceHandler:
                     self.logger.error(f"Command failed: {cmd}\nError: {stderr}")
                     return False
             
-            self.logger.info(f"Successfully configured {interface} in monitor mode (Linux)")
             return True
             
         except Exception as e:
@@ -96,7 +92,7 @@ class InterfaceHandler:
             
             commands = [
                 f"sudo ifconfig {interface} down",
-                f"sudo {airport_path} {interface} -z",  # Disassociate if associated
+                f"sudo {airport_path} {interface} -z",  # Disassociate
                 f"sudo {airport_path} {interface} sniff",  # Enable monitor mode
                 f"sudo ifconfig {interface} up"
             ]
@@ -107,7 +103,6 @@ class InterfaceHandler:
                     self.logger.error(f"Command failed: {cmd}\nError: {stderr}")
                     return False
             
-            self.logger.info(f"Successfully configured {interface} in monitor mode (macOS)")
             return True
             
         except Exception as e:
@@ -117,7 +112,6 @@ class InterfaceHandler:
     def _setup_windows(self, interface: str) -> bool:
         """Setup monitor mode on Windows using netsh"""
         try:
-            # Note: Windows support is limited and may not work on all adapters
             commands = [
                 f"netsh wlan set hostednetwork mode=allow interface={interface}",
                 f"netsh wlan start hostednetwork"
@@ -130,9 +124,7 @@ class InterfaceHandler:
                     return False
             
             self.logger.warning(
-                "Windows support for monitor mode is limited and may not work "
-                "on all wireless adapters. Consider using a Linux live USB for "
-                "better compatibility."
+                "Windows support for monitor mode is limited. Consider using Linux for better compatibility."
             )
             return True
             
@@ -159,19 +151,62 @@ class InterfaceHandler:
                 return False
             
             retcode, _, stderr = self._run_command(cmd)
-            if retcode != 0:
-                self.logger.error(f"Failed to set channel: {stderr}")
-                return False
-                
-            return True
+            return retcode == 0
             
         except Exception as e:
             self.logger.error(f"Failed to set channel: {e}")
             return False
 
-class HiddenWiFiScanner:
+class WiFiNetwork:
+    """Represents a discovered WiFi network"""
+    
+    def __init__(self, ssid: str, bssid: str):
+        self.ssid = ssid
+        self.bssid = bssid
+        self.channel = 0
+        self.signal_strength = 0
+        self.encryption = set()
+        self.cipher = set()
+        self.authentication = set()
+        self.first_seen = datetime.now()
+        self.last_seen = datetime.now()
+        self.beacons = 0
+        self.data_packets = 0
+        self.wps = False
+        self.vendor = ""
+
+    def update_signal(self, signal_strength: int):
+        """Update signal strength using exponential moving average"""
+        alpha = 0.3  # Smoothing factor
+        if self.signal_strength == 0:
+            self.signal_strength = signal_strength
+        else:
+            self.signal_strength = (alpha * signal_strength + 
+                                  (1 - alpha) * self.signal_strength)
+
+    def to_dict(self) -> Dict:
+        """Convert network information to dictionary"""
+        return {
+            'ssid': self.ssid,
+            'bssid': self.bssid,
+            'channel': self.channel,
+            'signal_strength': round(self.signal_strength, 2),
+            'encryption': list(self.encryption),
+            'cipher': list(self.cipher),
+            'authentication': list(self.authentication),
+            'first_seen': self.first_seen.strftime('%Y-%m-%d %H:%M:%S'),
+            'last_seen': self.last_seen.strftime('%Y-%m-%d %H:%M:%S'),
+            'beacons': self.beacons,
+            'data_packets': self.data_packets,
+            'wps': self.wps,
+            'vendor': self.vendor
+        }
+
+class WiFiScanner:
+    """WiFi network scanner with channel hopping and packet analysis"""
+    
     def __init__(self, interface: str, channel: Optional[int] = None,
-                 hop_channels: bool = True, output_file: Optional[str] = None):
+                hop_channels: bool = True, output_file: Optional[str] = None):
         # Setup logging
         logging.basicConfig(
             level=logging.INFO,
@@ -188,9 +223,9 @@ class HiddenWiFiScanner:
         # Initialize interface handler
         self.interface_handler = InterfaceHandler()
         
-        # Data structures to store discovered networks
-        self.hidden_networks: Dict[str, Dict] = {}  # BSSID -> network info
-        self.seen_ssids: Set[str] = set()  # Track unique SSIDs
+        # Data structures
+        self.networks: Dict[str, WiFiNetwork] = {}  # BSSID -> Network
+        self.seen_bssids: Set[str] = set()
         
         # Channel hopping
         self.channels = list(range(1, 14))  # 2.4GHz channels
@@ -213,12 +248,8 @@ class HiddenWiFiScanner:
         sys.exit(0)
 
     def setup_interface(self) -> bool:
-        """Configure wireless interface for monitoring using OS-specific handler"""
+        """Configure wireless interface for monitoring"""
         return self.interface_handler.setup_monitor_mode(self.interface)
-
-    def set_channel(self, channel: int):
-        """Set wireless interface channel using OS-specific handler"""
-        self.interface_handler.set_channel(self.interface, channel)
 
     def channel_hopper(self):
         """Hop through channels if enabled"""
@@ -227,7 +258,55 @@ class HiddenWiFiScanner:
             
         self.current_channel_index = (self.current_channel_index + 1) % len(self.channels)
         next_channel = self.channels[self.current_channel_index]
-        self.set_channel(next_channel)
+        self.interface_handler.set_channel(self.interface, next_channel)
+
+    def parse_security(self, packet) -> tuple[Set[str], Set[str], Set[str], bool]:
+        """Parse security information from beacon packet"""
+        encryption = set()
+        cipher = set()
+        auth = set()
+        wps = False
+        
+        # Extract security information from packet
+        while Dot11Elt in packet:
+            # Check for RSN (WPA2) information
+            if packet[Dot11Elt].ID == 48:
+                encryption.add("WPA2")
+                rsn = packet[Dot11Elt].info
+                
+                # Parse RSN structure
+                if len(rsn) >= 4:
+                    auth_count = rsn[6]
+                    if auth_count > 0:
+                        if b'\x00\x0f\xac\x02' in rsn:
+                            auth.add("PSK")
+                        if b'\x00\x0f\xac\x04' in rsn:
+                            auth.add("MGT")
+                    
+                    cipher_count = rsn[2]
+                    if cipher_count > 0:
+                        if b'\x00\x0f\xac\x04' in rsn:
+                            cipher.add("CCMP")
+                        if b'\x00\x0f\xac\x02' in rsn:
+                            cipher.add("TKIP")
+            
+            # Check for WPA information
+            elif packet[Dot11Elt].ID == 221 and packet[Dot11Elt].info.startswith(b'\x00\x50\xf2\x01\x01\x00'):
+                encryption.add("WPA")
+            
+            # Check for WPS
+            elif packet[Dot11Elt].ID == 221 and packet[Dot11Elt].info.startswith(b'\x00\x50\xf2\x04'):
+                wps = True
+            
+            packet = packet[Dot11Elt].payload
+        
+        # Check for WEP
+        if not encryption and packet.cap.privacy:
+            encryption.add("WEP")
+        elif not encryption and not packet.cap.privacy:
+            encryption.add("OPN")
+        
+        return encryption, cipher, auth, wps
 
     def process_packet(self, packet):
         """Process captured packet and extract network information"""
@@ -236,52 +315,57 @@ class HiddenWiFiScanner:
             
         self.packets_processed += 1
         
-        # Extract basic information
-        if packet.haslayer(RadioTap):
-            signal_strength = packet[RadioTap].dBm_AntSignal if hasattr(packet[RadioTap], 'dBm_AntSignal') else 'N/A'
-        else:
-            signal_strength = 'N/A'
-            
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        # Process different packet types
-        if packet.haslayer(Dot11Beacon):
-            if packet[Dot11].addr3 not in self.hidden_networks:
-                ssid = packet[Dot11Beacon].info.decode(errors='ignore')
-                if not ssid:  # Hidden network
-                    self.hidden_networks[packet[Dot11].addr3] = {
-                        'bssid': packet[Dot11].addr3,
-                        'ssid': None,
-                        'type': 'Hidden',
-                        'first_seen': timestamp,
-                        'last_seen': timestamp,
-                        'signal_strength': signal_strength,
-                        'channel': self.current_channel_index + 1 if self.hop_channels else self.channel,
-                        'probe_requests': set()
-                    }
-        
-        elif packet.haslayer(Dot11ProbeReq):
-            ssid = packet[Dot11ProbeReq].info.decode(errors='ignore')
-            if ssid:
-                self.seen_ssids.add(ssid)
-                # Update any matching hidden networks
-                for network in self.hidden_networks.values():
-                    if not network['ssid']:
-                        network['probe_requests'].add(ssid)
-        
-        elif packet.haslayer(Dot11ProbeResp):
-            bssid = packet[Dot11].addr3
-            ssid = packet[Dot11ProbeResp].info.decode(errors='ignore')
-            if bssid in self.hidden_networks and ssid:
-                self.hidden_networks[bssid]['ssid'] = ssid
-                self.hidden_networks[bssid]['last_seen'] = timestamp
-                self.hidden_networks[bssid]['signal_strength'] = signal_strength
-        
-        elif packet.haslayer(Dot11AssoReq):
-            bssid = packet[Dot11].addr3
-            if bssid in self.hidden_networks:
-                self.hidden_networks[bssid]['last_seen'] = timestamp
-                self.hidden_networks[bssid]['signal_strength'] = signal_strength
+        # Get the BSSID
+        if packet.type == 0 and (packet.subtype == 8 or packet.subtype == 5):
+            if packet.haslayer(Dot11Beacon) or packet.haslayer(Dot11ProbeResp):
+                try:
+                    bssid = packet[Dot11].addr3
+                    if not bssid:
+                        return
+                    
+                    # Extract network name
+                    if packet.haslayer(Dot11Beacon):
+                        packet_type = "Beacon"
+                    else:
+                        packet_type = "Probe Response"
+                    
+                    try:
+                        ssid = packet[Dot11Elt].info.decode('utf-8')
+                    except:
+                        ssid = "<HIDDEN>"
+                    
+                    # Create or update network
+                    if bssid not in self.networks:
+                        self.networks[bssid] = WiFiNetwork(ssid, bssid)
+                    
+                    network = self.networks[bssid]
+                    network.last_seen = datetime.now()
+                    
+                    if packet_type == "Beacon":
+                        network.beacons += 1
+                    
+                    # Update signal strength
+                    if packet.haslayer(RadioTap):
+                        signal_strength = packet[RadioTap].dBm_AntSignal
+                        network.update_signal(signal_strength)
+                    
+                    # Get channel
+                    try:
+                        channel = int(ord(packet[Dot11Elt:3].info))
+                        network.channel = channel
+                    except:
+                        pass
+                    
+                    # Parse security information
+                    encryption, cipher, auth, wps = self.parse_security(packet)
+                    network.encryption.update(encryption)
+                    network.cipher.update(cipher)
+                    network.authentication.update(auth)
+                    if wps:
+                        network.wps = True
+                    
+                except Exception as e:
+                    self.logger.debug(f"Error processing packet: {e}")
 
     def save_results(self):
         """Save results to file if output file is specified"""
@@ -289,7 +373,6 @@ class HiddenWiFiScanner:
             return
             
         try:
-            # Convert set to list for JSON serialization
             results = {
                 'scan_info': {
                     'interface': self.interface,
@@ -297,12 +380,9 @@ class HiddenWiFiScanner:
                     'end_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'packets_processed': self.packets_processed
                 },
-                'hidden_networks': {
-                    bssid: {
-                        **network,
-                        'probe_requests': list(network['probe_requests'])
-                    }
-                    for bssid, network in self.hidden_networks.items()
+                'networks': {
+                    bssid: network.to_dict()
+                    for bssid, network in self.networks.items()
                 }
             }
             
@@ -315,26 +395,36 @@ class HiddenWiFiScanner:
             self.logger.error(f"Failed to save results: {e}")
 
     def print_statistics(self):
-        """Print scan statistics"""
+        """Print scan statistics and network information"""
         duration = datetime.now() - self.start_time
+        
         print("\n=== Scan Statistics ===")
         print(f"Duration: {duration}")
         print(f"Packets Processed: {self.packets_processed}")
-        print(f"Hidden Networks Found: {len(self.hidden_networks)}")
-        print(f"Unique SSIDs Seen: {len(self.seen_ssids)}")
+        print(f"Networks Found: {len(self.networks)}")
         
-        print("\n=== Hidden Networks ===")
-        for bssid, network in self.hidden_networks.items():
-            print(f"\nBSSID: {bssid}")
-            print(f"SSID: {network['ssid'] or 'Unknown'}")
-            print(f"First Seen: {network['first_seen']}")
-            print(f"Last Seen: {network['last_seen']}")
-            print(f"Signal Strength: {network['signal_strength']}")
-            print(f"Channel: {network['channel']}")
-            if network['probe_requests']:
-                print("Probe Requests:")
-                for ssid in network['probe_requests']:
-                    print(f"  - {ssid}")
+        print("\n=== Networks ===")
+        # Sort networks by signal strength
+        sorted_networks = sorted(
+            self.networks.values(),
+            key=lambda x: x.signal_strength,
+            reverse=True
+        )
+        
+        for network in sorted_networks:
+            print(f"\nSSID: {network.ssid}")
+            print(f"BSSID: {network.bssid}")
+            print(f"Channel: {network.channel}")
+            print(f"Signal Strength: {round(network.signal_strength, 2)} dBm")
+            print(f"Security: {', '.join(network.encryption)}")
+            if network.cipher:
+                print(f"Cipher: {', '.join(network.cipher)}")
+            if network.authentication:
+                print(f"Authentication: {', '.join(network.authentication)}")
+            print(f"WPS: {'Yes' if network.wps else 'No'}")
+            print(f"First Seen: {network.first_seen.strftime('%H:%M:%S')}")
+            print(f"Last Seen: {network.last_seen.strftime('%H:%M:%S')}")
+            print(f"Beacons: {network.beacons}")
 
     def start_scanning(self):
         """Start the scanning process"""
@@ -366,33 +456,33 @@ class HiddenWiFiScanner:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='''Enhanced Hidden WiFi Scanner Tool
+        description='''WiFi Network Scanner Tool
 
-A sophisticated tool for detecting and analyzing hidden wireless networks.
+A comprehensive tool for discovering and analyzing wireless networks.
 Features include:
-- Detection of hidden SSIDs through probe requests/responses
-- Channel hopping for comprehensive scanning
+- Detection of all WiFi networks (2.4GHz)
+- Security information (WEP/WPA/WPA2, cipher, auth)
 - Signal strength monitoring
-- Detailed network information gathering
+- Channel hopping
+- Detailed network statistics
 - JSON output support
-- Comprehensive logging
-- Statistical analysis''',
+- Cross-platform support''',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''Examples:
-    # Basic scan on default interface
-    sudo python hiddenwifi.py -i wlan0
+    # Basic scan with channel hopping
+    sudo python wifiscanner.py -i wlan0
     
     # Scan specific channel
-    sudo python hiddenwifi.py -i wlan0 -c 6
+    sudo python wifiscanner.py -i wlan0 -c 6
     
     # Disable channel hopping
-    sudo python hiddenwifi.py -i wlan0 --no-hop
+    sudo python wifiscanner.py -i wlan0 --no-hop
     
     # Save results to file
-    sudo python hiddenwifi.py -i wlan0 -o scan_results.json
+    sudo python wifiscanner.py -i wlan0 -o scan_results.json
     
-    # Verbose output with channel hopping
-    sudo python hiddenwifi.py -i wlan0 -v
+    # Verbose output
+    sudo python wifiscanner.py -i wlan0 -v
     
 Note: This tool requires root privileges and a wireless interface that supports monitor mode.
         ''')
@@ -415,7 +505,11 @@ Note: This tool requires root privileges and a wireless interface that supports 
         print("This script must be run as root!")
         sys.exit(1)
     
-    scanner = HiddenWiFiScanner(
+    # Configure logging
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    scanner = WiFiScanner(
         interface=args.interface,
         channel=args.channel,
         hop_channels=not args.no_hop,
